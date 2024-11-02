@@ -6,10 +6,10 @@
 ; *** without express written permission from the author.         ***
 ; *******************************************************************
 
-#define DEBUG
+#define NODEBUG
 
-include    bios.inc
-include    kernel.inc
+#include include/bios.inc
+#include include/kernel.inc
 
 ; RD - Data page register
 ; RC - Stack frame pointer
@@ -22,32 +22,31 @@ include    kernel.inc
 ;  10 - last code was start of extended sequence
 ;  11 - last code was hi 5-bits of extended sequence
 
-           org     8000h
-           lbr     0ff00h
-#ifdef DEBUG
-           db      'zrun3d',0
-#else
-           db      'zrun3',0
-#endif
-           dw      9000h
-           dw      endrom+7000h
-           dw      2000h
-           dw      endrom-2000h
-           dw      2000h
-           db      0
+           org     2000h-6
 
-           org     2000h
-           br      start
+           dw      2000h
+           dw      header-2000h
+           dw      start
 
-include    date.inc
-include    build.inc
-           db      'Written by Michael H. Riley',0
+           br      prestart
+
+
+          ; Build information
+
+            db    11+80h                ; month
+            db    2                     ; day
+            dw    2024                  ; year
+            dw    1                     ; build
+
+            db    'See github.com/dmadole/MiniDOS-zrun3 for more info',0
+
+
+prestart:  lbr start
           
 data:
 ip:        db      0,0,0
 reg_rc:    dw      0
 reg_rb:    dw      0
-reg_r2:    dw      0
 hm_ptr:    db      0,0,0
 pstate:    db      0
 lfsr:      db      1,2,3,4
@@ -61,8 +60,6 @@ arg2:      dw      0
 arg3:      dw      0
 arg4:      dw      0
 arg5:      dw      0
-result:    db      0                   ; variable for result
-retval:    dw      0
 wrd_addr:  db      0
 wrd_len:   db      0
 tkn_cnt:   db      0
@@ -72,36 +69,18 @@ line_pos:  db      0
 #ifdef DEBUG
 tab:       db      0
 #endif
+last_page: db      0
 next_page: db      0
-page_tab:  db      0,0,0               ; holds page number of static-hi mem
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
-           db      0,0,0
+clkhand:   db      0
 fildes:    db      0,0,0,0
-           dw      dta
+           dw      0
            db      0,0
            db      0
            db      0,0,0,0
            dw      0,0
            db      0,0,0,0
 fildes2:   db      0,0,0,0
-           dw      0
+           dw      dta
            db      0,0
            db      0
            db      0,0,0,0
@@ -112,59 +91,74 @@ fildes2:   db      0,0,0,0
 start:     lda     ra                  ; move past any spaces
            smi     ' '
            lbz     start
+
            dec     ra                  ; back to non-space character
            ldn     ra                  ; was an argument given
            lbnz    start1              ; jump if so
+
            sep     scall               ; otherwise display usage
            dw      f_inmsg
            db      'Usage: zrun3 file',10,13,0
            lbr     o_wrmboot           ; and return to os
-start1:    ldi     high data           ; setup pointer for data page
-           phi     rd
-           ghi     ra                  ; copy argument address to rf
+
+start1:    ghi     ra                  ; copy argument address to rf
            phi     rf
            glo     ra
            plo     rf
+
 loop1:     lda     ra                  ; look for first <= space
            smi     33
            bdf     loop1
+
            dec     ra                  ; backup to char
            ldi     0                   ; and terminate filename
            str     ra
-           ldi     low fildes          ; point to file descriptor
-           plo     rd
-           ldi     0                   ; no special flags
-           plo     r7
-           sep     scall               ; open the story file
-           dw      o_open
-           lbnf    opened              ; jump if file opened correctly
+
+
+            ldi   fildes.1              ; setup pointer for data page
+            phi   rd
+            ldi   fildes+4              ; pointer to dta address
+            plo   rd
+
+            ldi   header.1              ; set header address as dta
+            str   rd
+            inc   rd
+            ldi   header.0
+            str   rd
+
+            ldi   fildes.0              ; point to file descriptor
+            plo   rd
+
+            ldi   0                     ; no special flags
+            plo   r7
+
+            sep   scall                 ; open the story file
+            dw    o_open
+            lbnf  opened                ; jump if file opened correctly
+
+
            ldi     high err_1          ; point to error message
            phi     rf
            ldi     low err_1
            plo     rf
+
 msg_ret:   sep     scall               ; and display it
            dw      o_msg
            lbr     o_wrmboot           ; return to Elf/OS
-opened:    ldi     low fildes          ; be sure we have file descriptor
-           plo     rd
-           ldi     high header         ; address for header
+
+
+
+
+opened:    ldi     high header         ; address for header
            phi     rf
            ldi     low header
            plo     rf
-           ldi     0                   ; need to read 64 bytes
-           phi     rc
-           ldi     64
-           plo     rc
-           sep     scall               ; read file header
-           dw      o_read
-           ldi     high header         ; address for header
-           phi     rf
-           ldi     low header
-           plo     rf
+
            ldn     rf                  ; get version
            plo     r7                  ; keep a copy
            smi     3                   ; must be 3
            lbz     ver_ok              ; jump if version is ok
+
            ldi     high err_2          ; point to error message
            phi     rf
            ldi     low err_2
@@ -180,9 +174,11 @@ opened:    ldi     low fildes          ; be sure we have file descriptor
            ldi     low crlf
            plo     rf
            lbr     msg_ret             ; display and return
+
 ; *****************************************
 ; *** Setup header and startup settings ***
 ; *****************************************
+
 ver_ok:    inc     rf                  ; move to header[1]
            ldn     rf                  ; retrieve flags
            ani     8fh                 ; clear writable flags
@@ -203,103 +199,181 @@ ver_ok:    inc     rf                  ; move to header[1]
            inc     rd
            lda     rf                  ; read low byte, move to header[8]
            str     rd                  ; initial ip is now set
+
            inc     rf                  ; header[9]
            inc     rf                  ; header[A]
            inc     rf                  ; header[B]
            inc     rf                  ; header[C]
            inc     rf                  ; header[D]
            inc     rf                  ; header[E]
+
            ldi     low static          ; need to get static address
            plo     rd
+
            lda     rf                  ; read high byte, move to header[F]
+           phi     ra
            str     rd                  ; store high byte of static address
            inc     rd
            lda     rf                  ; read low byte, move to header[10]
+           plo     ra
            str     rd
+
            ldn     rf                  ; get flags2 byte
            ani     0feh                ; clear lowest bit
            str     rf                  ; and write it back
+
            glo     rf                  ; add 14, moves to header[1E]
            adi     0eh
            plo     rf
            ghi     rf
            adci    0
            phi     rf
-           ldi     18                  ; user 18 for interpreter versino
-   ldi   1
+
+           ldi     18                  ; use 18 for interpreter version
+           ldi     1                   ; DSM
            str     rf
+
            inc     rf                  ; move to header[1F]
            ldi     2                   ; use 2
            str     rf
+
            inc     rf                  ; move to header[20]
            ldi     24                  ; set screen height to 24
            str     rf
+
            inc     rf                  ; move to header[21]
            ldi     80                  ; set screen width to 80
            str     rf
-           inc     rf                  ; move to header[22]
-           ldi     low header          ; move to memory just beyond header
-           adi     64
-           plo     rf
-           ldi     high header
-           adci    0
-           phi     rf
-           ldi     low static          ; need count of dynamic data
-           plo     rd
-           lda     rd                  ; read it
-           phi     rc                  ; into rc
-           ldn     rd
-           plo     rc
-           ldi     low fildes          ; point to file descriptr
-           plo     rd
-           sep     scall               ; read dynamic data into memory
-           dw      o_read
-           glo     rc                  ; add count to header address
-           adi     low header
-           plo     rf                  ; and place into rf
-           ghi     rc
-           adci    high header
-           phi     rf
-           ldi     low page_tab        ; setup page 0 has holding nothing
-           plo     rd
-page_loop: ldi     0                   ; mark as nothing in page
-           str     rd
-           inc     rd
-           ghi     rf                  ; get page address
-           str     rd                  ; and place into table entry
-           inc     rd
-           glo     rf
-           str     rd
-           inc     rd
-           ghi     rf                  ; get address
-           adi     2                   ; add 512 byte
-           phi     rf
-           smi     07bh                ; loop until 7bh
-           lbnf    page_loop
-           ldi     0                   ; place termination record
-           str     rd
-           inc     rd
-           str     rd
-           inc     rd
-           str     rd
-           glo     rd
-           smi     5                   ; point to last real entry
-           plo     re                  ; save this value
-           ldi     next_page           ; need to set next page pointer
-           plo     rd
-           glo     re                  ; recover value
-           str     rd                  ; and store
-           
-           ldi     7eh                 ; set main stack to 7effh
-           phi     r2
-           ldi     0ffh
-           plo     r2
-           ldi     7dh                 ; set game stack to 7dffh
-           phi     rb
-           phi     rc
-           ldi     0ffh
-           plo     rb
-           plo     rc
+
+
+          ; All dynamic pages of memory should be statically mapped since
+          ; we never page out memory, so load any additional pages beyond
+          ; the one already loaded to access the header.
+
+            ldi   mapping.1             ; pointer to mapping page table
+            phi   rb
+            ldi   mapping.0
+            plo   rb
+
+            ldi   0                     ; seek from beginning of file
+            plo   rc
+
+            phi   r8                    ; clear seek offset
+            plo   r8
+            phi   r7
+            plo   r7
+
+
+          ; Loop through each additional page and add to mapping table.
+          ; Because of the entry point, this also adds the first sector
+          ; that we already loaded to the mapping table.
+
+            lbr   loaddyn               ; add first page and check if more
+
+loopdyn:    ldi   fildes                ; pointer to file descriptor
+            plo   rd
+
+            sep   scall                 ; read all dynamic pages in
+            dw    o_seek
+
+loaddyn:    ldi   fildes+4              ; pointer to dta address
+            plo   rd
+
+            ldn   rd                    ; add page to mapping table
+            str   rb
+            inc   rb
+
+            adi   512.1                 ; advance physical page address
+            str   rd
+
+            ghi   r7                    ; increment file page offset
+            adi   512.1
+            phi   r7
+
+            ghi   ra                    ; decrement load pages count
+            smi   512.1
+            phi   ra
+
+            lbdf  loopdyn               ; continue until all loaded
+
+
+          ; Zero the rest of the page mapping table since nothing else will
+          ; be mapped in at this time, it will page in on demand later.
+
+zeromap:    ldi   0
+            str   rb
+            inc   rb
+
+            glo   rb
+            lbnz  zeromap
+
+
+          ; Zero out the CLOCK page list since no replacable pages are loaded
+          ; into memory yet.
+
+zerolst:    ldi   0
+            str   rb
+            inc   rb
+
+            glo   rb
+            smi   104
+            lbnz  zerolst
+
+
+          ; Save the address of the next free physical page buffer to use
+          ; for loading additional pages on-the-fly later.
+
+            ldn   rd                    ; get next physical page address
+            plo   re
+
+            ldi   next_page             ; save next physical page address
+            plo   rd
+            glo   re
+            str   rd
+
+
+          ; Initially point the clock hand to the start of the clock list so
+          ; it is just past the newest page (which will have been added at
+          ; the end of the list) when the algorithm starts being used.
+
+            ldi   clkhand
+            plo   rd
+            ldi   memlist
+            str   rd
+
+
+          ; Setup the game stack and the memory limit for physical pages.
+
+            ldi   k_heap.1              ; pointer to kernel heap pointer
+            phi   rf
+            ldi   k_heap.0
+            plo   rf
+
+            lda   rf                    ; get the heap starting address
+            phi   rb
+            phi   rc
+            ldn   rf
+            plo   rb
+            plo   rc
+
+            ldi   last_page             ; pointer to last page variable
+            plo   rd
+
+            glo   rb                    ; calculate last page and store
+            smi   header
+            ghi   rb
+            smbi  (512+256).1
+            str   rd
+
+ sex rd
+ out 4
+ sex r2
+
+            dec   rb                    ; set game stack to just below heap
+            dec   rc
+
+
+
            ldi     15                  ; setup 15 local variables for main
            plo     re
            sex     rb
@@ -2322,371 +2396,461 @@ getvar2:   sep     scall               ; exchange ra with rf
            dw      ex_ra_rf
            lbr     getvar_go           ; and return
 
-; *************************************
-; *** Read zmemory pointed to by RF ***
-; *** Returns byte in D             ***
-; *************************************
-rdmem16:   glo     rd                  ; save rd
-           stxd
-           glo     rf                  ; save original rf
-           stxd
-           ghi     rf
-           stxd
-           ldi     low static          ; need to compare to static address
-           plo     rd
-           inc     rd                  ; starting from lsb
-           sex     rd                  ; point x to static address
-           glo     rf                  ; and perform subtraction
-           sm
-           dec     rd                  ; point to msb
-           ghi     rf
-           smb
-           sex     r2                  ; point x back to stack
-           lbdf    rdmem_st            ; jump if address is static
-           ldi     low header          ; add in memory base
-           str     r2
-           glo     rf
-           add
-           plo     rf
-           ldi     high header
-           str     r2
-           ghi     rf
-           adc
-           phi     rf                  ; rf now has address
-           ldn     rf                  ; read byte from memory
-           plo     re                  ; save it
-           lbr     rdmem_rt            ; and return
-rdmem_st:  glo     r7                  ; save r7
-           stxd
-           ghi     rf                  ; need to get page number
-           shr                         ; which is high 7 bits
-           plo     r7
-           ghi     rf                  ; clear page number from offset
-           ani     1
-           phi     rf
-           sep     scall               ; read from page
-           dw      rd_page
-           plo     re                  ; save read byte
-           irx                         ; recover r7
-           ldx
-           plo     r7
-           lbr     rdmem_rt            ; and return
-           
 
-; *************************************
-; *** Read zmemory pointed to by RF ***
-; *** Returns word in R7            ***
-; *************************************
-rdmem16w:  sep     scall               ; read high byte out of memory
-           dw      rdmem16
-           phi     r7                  ; put into r7
-           inc     rf                  ; point to low byte
-           sep     scall               ; read low byte out of memory
-           dw      rdmem16
-           plo     r7
-           dec     rf                  ; put rf back
-           sep     sret                ; and return
+          ; ------------------------------------------------------------------
+          ; Read memory from address RF and return byte in D. Only the first
+          ; 64K can be accessed since the address is 16-bits. Virtual memory
+          ; is supported for static and dynamic ranges and pages will be 
+          ; loaded in on demand as needed. Although dynamic memory cannot be
+          ; paged, for speed we treat it the same as other memory for reads.
+          ; The address is in RF and the byte is returned in D.
+
+rdmem16:    glo   rb                    ; save for use as mapping pointer
+            stxd
+            ghi   rb
+            stxd
+
+            glo   rd                    ; save for variables access
+            stxd
+
+            ldi   mapping.1             ; set pointer to page mapping table
+            phi   rb
+
+            ghi   rf                    ; set bit 8 into df, page into index
+            shr
+            plo   rb
+
+            ldn   rb                    ; if physical page mapped, get byte
+            lbnz  getbyte
+
+            sep   scall                 ; load page from story file
+            dw    mappage
+
+            ghi   rf                    ; re-set bit 8 of address into df
+            shr
+
+            ldn   rb                    ; set recently accessed bit on page
+getbyte:    ori   1
+            str   rb
+
+            adci  -1                    ; replace recent with address bit 8
+
+            phi   rb                    ; point to byte in physical page
+            glo   rf
+            plo   rb
+
+            ldn   rb                    ; get byte and temporarily save
+            plo   re
+
+            irx                         ; restore variable access
+            ldxa
+            plo   rd
+
+            ldxa                        ; restore pointer register
+            phi   rb
+            ldx
+            plo   rb
+
+            glo   re                    ; return byte from memory
+            sep   sret
 
 
-; **************************************
-; *** Write zmemory pointed to by RF ***
-; *** D - byte to write              ***
-; **************************************
-wrmem16:   plo     re                  ; save byte to write
-           glo     rd                  ; save rd
-           stxd
-           glo     rf                  ; save original address
-           stxd
-           ghi     rf
-           stxd
-           ldi     low header          ; add in zmemory base
-           str     r2
-           glo     rf
-           add
-           plo     rf
-           ldi     high header
-           str     r2
-           ghi     rf
-           adc
-           phi     rf
-           glo     re                  ; recover byte to write
-           str     rf                  ; and store it
-rdmem_rt:  irx                         ; recover original rf
-           ldxa
-           phi     rf
-           ldxa
-           plo     rf
-           ldx                         ; recover original rd
-           plo     rd
-           glo     re                  ; recover byte to write
-           sep     sret                ; return to caller
+          ; ------------------------------------------------------------------
+          ; Read a word from memory at a 16-bit address. This is like the
+          ; byte read case, but a second byte needs to be read as well. We
+          ; special case the virtual mapping on the second byte only when
+          ; it overflows into the next page to optimize things. The address
+          ; is in RF and the word is returned in R7.
 
-; ********************************
-; *** Read from a zmemory page ***
-; *** R7 - page                ***
-; *** RF - offset              ***
-; *** Returns: D - bytes read  ***
-; ********************************
-rd_page:   glo     rd                  ; save current rd
-           stxd
-           ldi     low page_tab        ; get against loaded page
-           plo     rd
-           sex     rd                  ; set x to data pointer
-rd_pg_fnd: glo     r7                  ; check against page entry
-           sm                          ; compare
-;           lbz     page_gon            ; jump if found correct page
-           lbz     page_go             ; jump if found correct page
-           inc     rd                  ; point to page address
-           lda     rd                  ; see if end of table
-           lbz     rd_pg_end           ; jump if so
-           inc     rd                  ; move to next entry
-           lbr     rd_pg_fnd           ; keep looking
-page_go:   glo     rd                  ; see if at top page
-           smi     low page_tab
-           lbz     page_gon            ; jump if no need to bubble
-           sex     r2                  ; be sure x points to stack
-           glo     rf                  ; save rf
-           stxd
-           ghi     rf
-           stxd
-           ghi     rd                  ; copy rd to rf
-           phi     rf
-           glo     rd
-           plo     rf
-page_gol:  dec     rf                  ; make 1 entry higher up
-           dec     rf
-           dec     rf
-           glo     rd                  ; see if at top slot
-           smi     low page_tab
-           lbz     page_go2            ; jump if at top
-           ldn     rf                  ; exchange entries
-           plo     re
-           ldn     rd
-           str     rf
-           glo     re
-           str     rd
-           inc     rf                  ; point to next byte
-           inc     rd
-           ldn     rf                  ; exchange entries
-           plo     re
-           ldn     rd
-           str     rf
-           glo     re
-           str     rd
-           inc     rf                  ; point to next byte
-           inc     rd
-           ldn     rf                  ; exchange entries
-           plo     re
-           ldn     rd
-           str     rf
-           glo     re
-           str     rd
-           dec     rd                  ; back to beginning
-           dec     rd
-           dec     rf                  ; back to beginning
-           dec     rf
-           dec     rd                  ; back 1 whole entry
-           dec     rd
-           dec     rd
-           lbr     page_gol            ; loop until bubbled to top
-page_go2:  irx                         ; recover rf
-           ldxa
-           phi     rf
-           ldx
-           plo     rf
+rdmem16w:   glo   rb                    ; save for use as mapping pointer
+            stxd
+            ghi   rb
+            stxd
 
-page_gon:  sex     rd                  ; be sure x points to page entry
-           inc     rd                  ; point to lsb of address
-           inc     rd
-           glo     rf                  ; add it into rf
-           add
-           plo     rf
-           dec     rd
-           ghi     rf
-           adc
-           phi     rf
-           sex     r2                  ; point x to stack
-           ldn     rf                  ; read the byte
-           plo     re                  ; set aside for a moment
-           irx                         ; recover rd
-           ldx
-           plo     rd
-           glo     re                  ; get read byte
-           sep     sret                ; and return
-rd_pg_end: ldi     low page_tab        ; need to find a page
-           plo     rd
-           sex     rd                  ; be sure stack points to table
-rd_pg_el:  ldi     low next_page       ; need to get next usable page
-           plo     rd
-           ldn     rd                  ; read page address
-           plo     re                  ; keep a copy
+            glo   rd                    ; save for variables access
+            stxd
 
-rd_pg_e2:  glo     re                  ; resetup rd
-           plo     rd
-           lbr     rd_need
-           
+            ldi   mapping.1             ; set pointer to page mapping table
+            phi   rb
 
-rd_need:   sex     r2                  ; point x back to stack
-           glo     r7                  ; save consumed registers
-           stxd
-           ghi     r7
-           stxd
-           glo     r8                  ; save consumed registers
-           stxd
-           ghi     r8
-           stxd
-           glo     rc                  ; save consumed registers
-           stxd
-           ghi     rc
-           stxd
-           glo     rf                  ; save consumed registers
-           stxd
-           ghi     rf
-           stxd
-           glo     rd                  ; save consumed registers
-           stxd
-           glo     r7                  ; save new page address
-           str     rd
-           glo     r7                  ; shift page number
-           shl
-           ani     0feh                ; strip lowest bit out
-           phi     r7                  ; and put into r7
-           ldi     0                   ; build high word
-           phi     r8
-           shlc 
-           plo     r8
-           ldi     0                   ; low byte of r7 is zero
-           plo     r7                  ; R8:R7 now has file offset
-           glo     rd                  ; save page pointer
-           stxd
-           ldi     low fildes          ; point to file descriptor
-           plo     rd
-           ldi     0                   ; seek from beginning
-           plo     rc
-           phi     rc
-           sep     scall               ; perform the seek
-           dw      o_seek
-           irx                         ; recover page pointer
-           ldx
-           plo     rd
-           inc     rd                  ; move to buffer address
-           lda     rd                  ; retrieve puffer address
-           phi     rf                  ; into rf
-           lda     rd
-           plo     rf
-           ldi     2                   ; need to read 512 bytes
-           phi     rc
-           ldi     0
-           plo     rc
-           ldi     low fildes          ; point to file descriptor
-           plo     rd
-           sep     scall               ; read the bytes
-           dw      o_read
-           irx                         ; recover consumed registers
-           ldxa
-           plo     rd
-           ldxa
-           phi     rf
-           ldxa
-           plo     rf
-           ldxa
-           phi     rc
-           ldxa
-           plo     rc
-           ldxa
-           phi     r8
-           ldxa
-           plo     r8
-           ldxa
-           phi     r7
-           ldx
-           plo     r7
-           lbr     page_go             ; now retrieve byte
-           
-; ******************************
-; *** Read next byte from IP ***
-; *** Returns: D - next byte ***
-; ******************************
-readip:    glo     rd                  ; want to save rd position
-           stxd
-           glo     rf                  ; save rf
-           stxd
-           ghi     rf
-           stxd
-           ldi     low ip              ; need high byte of ip
-#ifdef DEBUG
-   plo     rd
-   ldn     rd                  ; get it
-   lbnz    readip_l            ; jump if long address
-   inc     rd                  ; point to middle byte of ip
-   lda     rd                  ; and read it into rf
-   phi     rf
-   ldn     rd
-   plo     rf
-   sep     scall               ; read using 16-bit routine
-   dw      rdmem16
-   plo     re                  ; save answer
-  sep  scall
-  dw   hexout
-   lbr inc_ip
-#endif
-read_17:   plo     rd
-           ldn     rd                  ; get it
-           lbnz    readip_l            ; jump if long address
-           inc     rd                  ; point to middle byte of ip
-           lda     rd                  ; and read it into rf
-           phi     rf
-           ldn     rd
-           plo     rf
-           sep     scall               ; read using 16-bit routine
-           dw      rdmem16
-           plo     re                  ; save answer
-inc_ip:    ldn     rd                  ; get lsb
-           adi     1                   ; increment it
-           str     rd                  ; and put back
-           dec     rd                  ; now middle byte
-           ldn     rd
-           adci    0
-           str     rd
-           dec     rd                  ; and now high byte
-           ldn     rd
-           adci    0
-           str     rd
-           lbr     rdmem_rt            ; return
-readip_l:  glo     r7                  ; save r7
-           stxd
-           inc     rd                  ; point to middle byte
-           ldn     rd                  ; and retrieve it
-           shr                         ; get page number
-           ori     080h                ; place high bit
-           plo     r7                  ; and place into r7
-           ldn     rd                  ; get byte again
-           ani     1                   ; strip out page
-           phi     rf                  ; and place into rf
-           inc     rd                  ; point at lsb
-           ldn     rd                  ; retrieve it
-           plo     rf                  ; rf now has offset
-           sep     scall               ; read the page
-           dw      rd_page
-           plo     re                  ; save copy result
-           irx                         ; recover r7
-           ldx
-           plo     r7
-           lbr     inc_ip              ; now increment pointer
+            ghi   rf                    ; set bit 8 into df, page into index
+            shr
+            plo   rb
+
+            ldn   rb                    ; if physical page mapped, get byte
+            lbnz  word1st
+
+            sep   scall                 ; load page from story file
+            dw    mappage
+
+            ghi   rf                    ; re-set bit 8 of address into df
+            shr
+
+            ldn   rb                    ; set recently accessed bit on page
+word1st:    ori   1
+            str   rb
+
+            adci  -1                    ; replace recent with address bit 8
+
+            phi   rb                    ; point to byte in physical page
+            glo   rf
+            plo   rb
+
+            lda   rb                    ; get byte and save in return value
+            phi   r7
 
 
-; **********************************
-; *** Read next byte from hm_ptr ***
-; *** Returns: D - next byte     ***
-; **********************************
-readhm:    glo     rd                  ; want to save rd position
-           stxd
-           glo     rf                  ; save rf
-           stxd
-           ghi     rf
-           stxd
-           ldi     low hm_ptr          ; need high byte of ip
-           lbr     read_17             ; then read from 17-bit address
+          ; Next check if the second byte of the word extends into the next
+          ; page of memory, if so, we need to map virtual to physical again.
+
+            glo   rb                    ; if lsb did not wrap just get next
+            lbnz  notwrap
+
+            inc   rf                    ; advance virtual pointer
+
+            ghi   rf                    ; if bit 8 not wrap just get next
+            shr
+            lbdf  notwrap
+
+            plo   rb                    ; get virtual page map pointer
+            ldi   mapping.1
+            phi   rb
+
+            ldn   rb                    ; if physical page mapped, get byte
+            lbnz  word2nd
+
+            sep   scall                 ; load page from story file
+            dw    mappage
+
+            ldn   rb                    ; set recently accessed bit on page
+word2nd:    ori   1
+            str   rb
+
+            xri   1                     ; clear recent bit
+
+            phi   rb                    ; point to byte in physical page
+            glo   rf
+            plo   rb
+
+            dec   rf                    ; restore original address
+
+
+          ; Either way, the second byte of the word is now pointer to by RB.
+
+notwrap:    ldn   rb                    ; get byte and save in return value
+            plo   r7
+
+            irx                         ; restore variable access
+            ldxa
+            plo   rd
+
+            ldxa                        ; restore pointer register
+            phi   rb
+            ldx
+            plo   rb
+
+            glo   re                    ; return byte from memory
+            sep   sret
+
+
+          ; ------------------------------------------------------------------
+          ; Write byte D to memory pointed to by RF. Only the dynamic memory
+          ; range is writable, and all is mapped linerly at startup, so it
+          ; is unnecessary to lookup virtual mapping or mark the page recent.
+
+wrmem16:    plo   re                    ; save byte to write
+
+            ghi   rf
+            stxd
+
+            adi   header.1
+            phi   rf
+
+            glo   re
+            str   rf
+
+            irx
+            ldx
+            phi   rf
+
+            glo   re                    ; return byte written
+            sep   sret
+
+
+          ; ------------------------------------------------------------------
+          ; This is the same as the read from IP case except it's the byte
+          ; pointed to by the HM_PTR in memory instead.
+
+readhm:     glo   rb                    ; save for use as mapping pointer
+            stxd
+            ghi   rb
+            stxd
+
+            glo   rd
+            stxd
+
+            ldi   hm_ptr
+            plo   rd
+
+            lbr   read17
+
+
+          ; ------------------------------------------------------------------
+          ; This reads a byte from memory pointed to by the 17-bit address at
+          ; IP, incrementing the address afterward. The byte is returned in D.
+
+readip:     glo   rb                    ; save for use as mapping pointer
+            stxd
+            ghi   rb
+            stxd
+
+            glo   rd
+            stxd
+
+            ldi   ip
+            plo   rd
+
+read17:     ldi   mapping.1             ; set pointer to page mapping table
+            phi   rb
+
+            lda   rd
+            shr
+            lda   rd
+            shrc
+            plo   rb
+
+            ldn   rb                    ; if physical page mapped, get byte
+            lbnz  hippage
+
+            glo   rd
+            stxd
+
+            sep   scall                 ; load page from story file
+            dw    mappage
+
+            irx
+            ldx
+            plo   rd
+            dec   rd
+
+            lda   rd                    ; re-set bit 8 of address into df
+            shr
+
+            ldn   rb                    ; set recently accessed bit on page
+hippage:    ori   1
+            str   rb
+
+            adci  -1                    ; replace recent with address bit 8
+
+            phi   rb                    ; point to byte in physical page
+            ldn   rd
+            plo   rb
+
+            lda   rb                    ; get byte and temporarily save
+            plo   re
+
+            glo   rb
+            str   rd
+
+            lbnz  iprdret
+
+            dec   rd
+            ldn   rd
+            adi   1
+            str   rd
+
+            lbnf  iprdret
+
+            dec   rd
+            ldn   rd
+            adi   1
+            str   rd
+
+iprdret:    irx                         ; restore pointer register
+            ldxa
+            plo   rd
+
+            ldxa
+            phi   rb
+            ldx
+            plo   rb
+
+            glo   re                    ; return byte from memory
+            sep   sret
+
+
+          ; ------------------------------------------------------------------
+          ; If the page isn't mapped to physical memory, we need to load it
+          ; from disk, replacing the least recently used page. Obviously this
+          ; is an expensive operation, but usually only needed a few times
+          ; per command in gameplay on a 32KB system, less on larger ones.
+          ; RB points to the virtual map entry that needs its contents loaded.
+          ; This will either allocate a new page, or recycle an old page, and
+          ; load the content then update the physical page in the map entry.
+
+mappage:    glo   rc                    ; need to use for o_seek
+            stxd
+
+            glo   r8                    ; need to use for o_seek
+            stxd
+            ghi   r8
+            stxd
+
+            glo   r7                    ; need to use for o_seek
+            stxd
+            ghi   r7
+            stxd
+
+
+          ; First check if there is a free page of physical memory available,
+          ; if so, use that first before recycling any pages.
+
+            ldi   last_page             ; pointer to next last page index
+            plo   rd
+
+            lda   rd                    ; get last page, advance to next
+            str   r2
+
+            ldn   rd                    ; go recycle if no pages left
+            sd
+            lbnf  oldpage
+
+
+          ; If there is a free page availabile then map the virtual page
+          ; requested to that page and update free page index.
+
+            ldn   rd                    ; map to next physical page
+            str   rb
+
+            adi   2                     ; update next free page pointer
+            str   rd
+
+
+          ; Find the next open entry in the CLOCK table, add newly mapped
+          ; page into that entry, and update the hand pointer to it.
+
+            ldi   memlist.1             ; get pointer to clock table
+            phi   r8
+            ldi   memlist.0
+            plo   r8
+
+scnlist:    lda   r8                    ; scan for end of clock list
+            lbnz  scnlist
+            dec   r8
+
+            glo   rb                    ; set new page into free entry
+            str   r8
+
+            lbr   getpage               ; load page from story file
+
+
+          ; Find a physical memory page to discard and reuse using the CLOCK
+          ; algorithm approximation of least-recently-used to find a page
+          ; mapping entry to discard and replace, which is returned in RB.
+
+oldpage:    ghi   rb                    ; pointer to page mapping table
+            phi   r7
+
+            ldi   clkhand               ; get pointer to clock hand index
+            plo   rd
+
+            ldi   memlist.1             ; get pointer to clock hand entry
+            phi   r8
+            ldn   rd
+            plo   r8
+
+            lbr   findold
+
+
+          ; Iterate through the circular list looking at the hand for an
+          ; entry not recently accessed. For each item that is recently
+          ; accessed, clear the recent bit and advance to next entry. Note
+          ; that the CLOCK table entries are pointers to the mapping table.
+
+clearit:    shl                         ; clear the recent bit on entry
+            str   r7
+
+            inc   r8                    ; advance the clock hand
+
+findold:    ldn   r8                    ; if non-zero then a valid entry
+            lsnz
+
+            plo   r8                    ; otherwise reset to start of list
+            ldn   r8
+
+            plo   r7                    ; pointer to page table entry
+            ldn   r7
+
+            shr                         ; if recent is set, keep looking
+            lbdf  clearit
+
+
+          ; Now that we have found the physical page to discard and replace,
+          ; update the CLOCK table and virtual memory mapping.
+
+            glo   rb                    ; update clock entry to new page
+            str   r8
+
+            inc   r8                    ; advance hand index and save
+            glo   r8
+            plo   rd
+
+            ldn   r7                    ; move physical to new virtual map
+            str   rb
+
+            ldi   0                     ; unmap old virtual page entry
+            str   r7
+
+
+          ; Load a page from the story file into a physical page. This loads
+          ; the virtual page in RB.1 into the physical page pointed to by RB.
+
+getpage:    ldi   fildes+4              ; set dta to physical page address
+            plo   rd
+            ldn   rb
+            str   rd
+
+            glo   rb                    ; virtual page address into offset
+            shl
+            phi   r7
+
+            ldi   0                     ; set whence to "from beginning"
+            plo   rc
+
+            plo   r7                    ; clear msb, lsb of seek address
+            phi   r8
+
+            shlc                        ; load highest bit of address
+            plo   r8
+
+            ldi   fildes                ; get file descriptor pointer
+            plo   rd
+
+            sep   scall                 ; perform seek to page start
+            dw    o_seek
+
+
+          ; With the new page mapped and loaded, just need to clean up and
+          ; return to the caller.
+
+            irx                         ; advance stack pointer
+
+            ldxa                        ; restore register saved for o_seek
+            phi   r7
+            ldxa
+            plo   r7
+
+            ldxa                        ; restore register saved for o_seek
+            phi   r8
+            ldxa
+            plo   r8
+
+            ldx                         ; restore register saved for o_seek
+            plo   rc
+
+            sep   sret                  ; return with rb set to page
+
+
 
 ; ******************************************************************
 ; ***                   0OP instruction handlers                 ***
@@ -2790,25 +2954,6 @@ get_fname: sep     scall
            dw      o_input
            sep     scall               ; perform cr/lf
            dw      docrlf
-           ldi     low next_page       ; need last page address for dta
-           plo     rd
-           lda     rd                  ; retrieve it
-           plo     rd                  ; rd now pointing at page
-           ldi     0                   ; set page byte to zero
-           str     rd
-           inc     rd                  ; now get address
-           lda     rd
-           phi     rf
-           ldn     rd
-           plo     rf
-           ldi     low fildes2         ; now point to save fildes
-           adi     4                   ; point to dta field
-           plo     rd
-           ghi     rf                  ; and write dta address
-           str     rd
-           inc     rd
-           glo     rf
-           str     rd
            ldi     low fildes2         ; now point to save fildes
            plo     rd                  ; fildes is now ready
            ldi     high tbuffer        ; point to filename
@@ -2976,18 +3121,6 @@ op_rest:   glo     rc                  ; save rc
            phi     r2
            lda     rd
            plo     r2
-           ldi     low page_tab        ; need to clear page table
-           plo     rd
-           ldi     19                  ; 19 entries
-           plo     re
-clear_lp:  ldi     0                   ; clear entry
-           str     rd
-           inc     rd                  ; move to next entry
-           inc     rd
-           inc     rd
-           dec     re                  ; decrement count
-           glo     re                  ; see if done
-           lbnz    clear_lp            ; jump if not done
            lbr     true
 
 ; *********************************
@@ -4895,10 +5028,53 @@ alpha2:    db      ' ',10,'0123456789.,!?_#',39,'"/\-:()'
 err_1:     db      'Could not open story file'
 crlf:      db      10,13,0
 err_2:     db      'Wrong version, needs: ',0
-endrom:    equ     $
 
 tbuffer:   ds      32
 
 dta:       ds      512
 
-header:    ds      64
+           org     (($-1)|255)+1
+
+
+          ; The virtual machine memory management scheme is based on memory
+          ; pages of 512 bytes, because it matches the sector size, and also
+          ; it allows all 128K to be addressed with an 8-bit page address.
+          ;
+          ; There are two tables used to track virtual memory, the first is
+          ; a page map which maps all virtual pages to physical pages. The
+          ; index of this 256-entry table is the 8-bit virtual page address.
+          ; Each entry contains the MSB of the address of the physical page
+          ; mapped to that virtual page. Since pages are 512 bytes, the low
+          ; bit of the address is not significat, and we align pages so that
+          ; it is always zero. The low bit in the page table can then be 
+          ; used to implement the referenced bit in the CLOCK replacement
+          ; algorithm. Since the mapping table needs to be references on 
+          ; each access anyway, this makes the modified bit efficient to set.
+          ;
+          ; All addresses are mapped the same in this table, whether in the
+          ; dynamic, static, or high memory ranges, to increase efficiency.
+          ; The only difference is that dynamic pages are permanently mapped
+          ; to physical pages and cannot be replaced.
+          ;
+          ; The second table is a list of all mappable physical pages. This is
+          ; a circular list using the CLOCK algorithm. Each entry in this list
+          ; contains a virtual page address rather than a physical page
+          ; address even though it is the physical page that the entry is
+          ; concerned with. This requires that all physical pages are always
+          ; mapped to virtual pages; this is done by pre-loading and mapping
+          ; all physical pages at startup to the first virtual pages in the
+          ; story file. The reason for referencing this way is so that the
+          ; modified bit of a page is directly indexable from the CLOCK entry.
+          ;
+          ; Dynamic pages are not referenced in the CLOCK algorithm list, and
+          ; this makes them never chosen as candidates for replacement.
+         
+
+mapping:    ds   256
+memlist:    ds   104
+
+header:     equ  (($-1)|511)+1
+
+            end  start
+
+
